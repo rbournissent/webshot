@@ -153,27 +153,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    // Determine dimensions
-    const firstImg = validFrames[0].img;
-    const dpr = validFrames[0].slice.devicePixelRatio || 1;
-    const baseWidth = firstImg.naturalWidth;
-    
-    // Calculate total height
-    let totalHeight = 0;
-    validFrames.forEach(({ img, slice }, idx) => {
-      if (idx === 0) {
-        totalHeight += img.naturalHeight;
-      } else {
-        const prevSlice = validFrames[idx - 1].slice;
-        const scrollDelta = (slice.scrollY - prevSlice.scrollY) * dpr;
-        // If scroll delta is greater than 0, use exact delta; otherwise stack
-        if (scrollDelta > 0 && scrollDelta <= img.naturalHeight) {
-          totalHeight += Math.round(scrollDelta);
-        } else {
-          totalHeight += img.naturalHeight;
-        }
+    // 1. Calculate total canvas height
+    let totalHeight = validFrames[0].img.naturalHeight;
+    for (let i = 1; i < validFrames.length; i++) {
+      const prevSlice = validFrames[i - 1].slice;
+      const currSlice = validFrames[i].slice;
+      const dpr = currSlice.devicePixelRatio || 1;
+      const deltaY_css = currSlice.scrollY - prevSlice.scrollY;
+      
+      if (deltaY_css > 0) {
+        const newHeight_px = Math.min(
+          validFrames[i].img.naturalHeight,
+          Math.round(deltaY_css * dpr)
+        );
+        totalHeight += newHeight_px;
       }
-    });
+    }
 
     canvasWidth = baseWidth;
     canvasHeight = totalHeight;
@@ -186,23 +181,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-    // Draw slices
-    let currentY = 0;
-    validFrames.forEach(({ img, slice }, idx) => {
-      if (idx === 0) {
-        ctx.drawImage(img, 0, 0);
-        currentY = img.naturalHeight;
-      } else {
-        const prevSlice = validFrames[idx - 1].slice;
-        const scrollDelta = (slice.scrollY - prevSlice.scrollY) * dpr;
-        const drawY = (scrollDelta > 0 && scrollDelta <= img.naturalHeight)
-          ? currentY - (img.naturalHeight - scrollDelta)
-          : currentY;
-        
-        ctx.drawImage(img, 0, drawY);
-        currentY = drawY + img.naturalHeight;
-      }
-    });
+    // 2. Draw slices cleanly:
+    // Frame 0: draw entire image at y = 0
+    ctx.drawImage(validFrames[0].img, 0, 0);
+    let currentCanvasY = validFrames[0].img.naturalHeight;
+
+    // Subsequent frames: only copy the NEW bottom content revealed by scrolling
+    for (let i = 1; i < validFrames.length; i++) {
+      const prevSlice = validFrames[i - 1].slice;
+      const currSlice = validFrames[i].slice;
+      const img = validFrames[i].img;
+      const dpr = currSlice.devicePixelRatio || 1;
+      const deltaY_css = currSlice.scrollY - prevSlice.scrollY;
+
+      if (deltaY_css <= 0) continue; // No scroll progress, skip duplicate frame
+
+      const newHeight_px = Math.min(img.naturalHeight, Math.round(deltaY_css * dpr));
+      const sourceY_px = Math.max(0, img.naturalHeight - newHeight_px);
+
+      ctx.drawImage(
+        img,
+        0, sourceY_px, img.naturalWidth, newHeight_px,
+        0, currentCanvasY, canvasWidth, newHeight_px
+      );
+      currentCanvasY += newHeight_px;
+    }
 
     // Update UI Badges
     dimensionBadge.textContent = `${canvasWidth} × ${canvasHeight} px`;

@@ -29,18 +29,18 @@ class InteractiveCropper {
     this.bindEvents();
   }
 
+  /**
+   * Initializes cropper to cover the ENTIRE screenshot by default
+   */
   init(canvasWidth, canvasHeight, zoom) {
     this.canvasWidth = canvasWidth;
     this.canvasHeight = canvasHeight;
     this.zoom = zoom;
 
-    // Default crop: center 85% of image or full
-    const initialW = Math.round(canvasWidth * 0.9);
-    const initialH = Math.min(canvasHeight, Math.round(initialW * (9 / 16) > canvasHeight ? canvasHeight * 0.9 : initialW * (9 / 16)));
-    const initialX = Math.round((canvasWidth - initialW) / 2);
-    const initialY = Math.round((canvasHeight - initialH) / 4);
-
-    this.setCrop(initialX, initialY, initialW, initialH);
+    // Default: Entire full screenshot
+    this.aspectRatio = null;
+    this.aspectRatioName = 'free';
+    this.setCrop(0, 0, canvasWidth, canvasHeight);
   }
 
   setZoom(zoom) {
@@ -49,7 +49,6 @@ class InteractiveCropper {
   }
 
   setCrop(x, y, width, height, notify = true) {
-    // Clamp to canvas boundaries
     const minSize = 20;
     width = Math.max(minSize, Math.min(this.canvasWidth, Math.round(width)));
     height = Math.max(minSize, Math.min(this.canvasHeight, Math.round(height)));
@@ -76,14 +75,23 @@ class InteractiveCropper {
       const [w, h] = ratioStr.split(':').map(Number);
       if (w && h) {
         this.aspectRatio = w / h;
-        // Adjust current crop height to match aspect ratio
-        let newH = Math.round(this.crop.width / this.aspectRatio);
+        // Adjust current crop to fit the aspect ratio within canvas bounds
         let newW = this.crop.width;
+        let newH = Math.round(newW / this.aspectRatio);
+
         if (newH > this.canvasHeight) {
           newH = this.canvasHeight;
           newW = Math.round(newH * this.aspectRatio);
         }
-        this.setCrop(this.crop.x, this.crop.y, newW, newH);
+        if (newW > this.canvasWidth) {
+          newW = this.canvasWidth;
+          newH = Math.round(newW / this.aspectRatio);
+        }
+
+        const newX = Math.max(0, Math.min(this.canvasWidth - newW, this.crop.x));
+        const newY = Math.max(0, Math.min(this.canvasHeight - newH, this.crop.y));
+
+        this.setCrop(newX, newY, newW, newH);
       }
     }
   }
@@ -159,69 +167,106 @@ class InteractiveCropper {
 
     switch (this.activeHandle) {
       case 'e':
-        width += deltaX;
-        if (this.aspectRatio) height = width / this.aspectRatio;
+        width = Math.max(minSize, Math.min(this.canvasWidth - x, width + deltaX));
+        if (this.aspectRatio) {
+          height = Math.min(this.canvasHeight - y, Math.round(width / this.aspectRatio));
+          width = Math.round(height * this.aspectRatio);
+        }
         break;
-      case 'w':
-        deltaX = Math.min(deltaX, width - minSize);
-        x += deltaX;
-        width -= deltaX;
-        if (this.aspectRatio) height = width / this.aspectRatio;
+
+      case 'w': {
+        const maxX = x + width - minSize;
+        const newX = Math.max(0, Math.min(maxX, x + deltaX));
+        width = width + (x - newX);
+        x = newX;
+        if (this.aspectRatio) {
+          height = Math.min(this.canvasHeight - y, Math.round(width / this.aspectRatio));
+          width = Math.round(height * this.aspectRatio);
+        }
         break;
+      }
+
       case 's':
-        height += deltaY;
-        if (this.aspectRatio) width = height * this.aspectRatio;
+        height = Math.max(minSize, Math.min(this.canvasHeight - y, height + deltaY));
+        if (this.aspectRatio) {
+          width = Math.min(this.canvasWidth - x, Math.round(height * this.aspectRatio));
+          height = Math.round(width / this.aspectRatio);
+        }
         break;
-      case 'n':
-        deltaY = Math.min(deltaY, height - minSize);
-        y += deltaY;
-        height -= deltaY;
-        if (this.aspectRatio) width = height * this.aspectRatio;
+
+      case 'n': {
+        const maxY = y + height - minSize;
+        const newY = Math.max(0, Math.min(maxY, y + deltaY));
+        height = height + (y - newY);
+        y = newY;
+        if (this.aspectRatio) {
+          width = Math.min(this.canvasWidth - x, Math.round(height * this.aspectRatio));
+          height = Math.round(width / this.aspectRatio);
+        }
         break;
+      }
+
       case 'se':
-        width += deltaX;
+        width = Math.max(minSize, Math.min(this.canvasWidth - x, width + deltaX));
         if (this.aspectRatio) {
-          height = width / this.aspectRatio;
+          height = Math.min(this.canvasHeight - y, Math.round(width / this.aspectRatio));
+          width = Math.round(height * this.aspectRatio);
         } else {
-          height += deltaY;
+          height = Math.max(minSize, Math.min(this.canvasHeight - y, height + deltaY));
         }
         break;
-      case 'sw':
-        deltaX = Math.min(deltaX, width - minSize);
-        x += deltaX;
-        width -= deltaX;
+
+      case 'sw': {
+        const maxX = x + width - minSize;
+        const newX = Math.max(0, Math.min(maxX, x + deltaX));
+        width = width + (x - newX);
+        x = newX;
         if (this.aspectRatio) {
-          height = width / this.aspectRatio;
+          height = Math.min(this.canvasHeight - y, Math.round(width / this.aspectRatio));
+          width = Math.round(height * this.aspectRatio);
         } else {
-          height += deltaY;
+          height = Math.max(minSize, Math.min(this.canvasHeight - y, height + deltaY));
         }
         break;
-      case 'ne':
-        width += deltaX;
+      }
+
+      case 'ne': {
+        width = Math.max(minSize, Math.min(this.canvasWidth - x, width + deltaX));
         if (this.aspectRatio) {
-          const newH = width / this.aspectRatio;
-          y -= (newH - height);
-          height = newH;
+          const newH = Math.round(width / this.aspectRatio);
+          const newY = Math.max(0, y + height - newH);
+          height = y + height - newY;
+          width = Math.round(height * this.aspectRatio);
+          y = newY;
         } else {
-          deltaY = Math.min(deltaY, height - minSize);
-          y += deltaY;
-          height -= deltaY;
+          const maxY = y + height - minSize;
+          const newY = Math.max(0, Math.min(maxY, y + deltaY));
+          height = height + (y - newY);
+          y = newY;
         }
         break;
-      case 'nw':
-        deltaX = Math.min(deltaX, width - minSize);
-        deltaY = Math.min(deltaY, height - minSize);
-        x += deltaX;
-        width -= deltaX;
+      }
+
+      case 'nw': {
+        const maxX = x + width - minSize;
+        const newX = Math.max(0, Math.min(maxX, x + deltaX));
+        width = width + (x - newX);
+        x = newX;
+
         if (this.aspectRatio) {
-          const newH = width / this.aspectRatio;
-          y -= (newH - height);
-          height = newH;
+          const newH = Math.round(width / this.aspectRatio);
+          const newY = Math.max(0, y + height - newH);
+          height = y + height - newY;
+          width = Math.round(height * this.aspectRatio);
+          y = newY;
         } else {
-          y += deltaY;
-          height -= deltaY;
+          const maxY = y + height - minSize;
+          const newY = Math.max(0, Math.min(maxY, y + deltaY));
+          height = height + (y - newY);
+          y = newY;
         }
         break;
+      }
     }
 
     this.setCrop(x, y, width, height);

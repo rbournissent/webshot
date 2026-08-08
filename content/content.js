@@ -146,12 +146,13 @@
         }
       }
 
-      // Scroll down by one viewport height minus overlap
-      const nextY = Math.min(currentScrollY + viewportHeight - overlapBuffer, docHeight - viewportHeight);
-      window.scrollTo({ top: nextY, left: 0, behavior: 'smooth' });
+      // Scroll down by 75% of viewport height (ensures clean overlapping context without gaps)
+      const scrollStep = Math.max(100, Math.floor(viewportHeight * 0.75));
+      const nextY = Math.min(currentScrollY + scrollStep, docHeight - viewportHeight);
+      window.scrollTo({ top: nextY, left: 0, behavior: 'instant' });
 
-      // Allow smooth scroll to settle
-      await sleep(250);
+      // Allow rendering to settle
+      await sleep(150);
     }
   }
 
