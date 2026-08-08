@@ -1,0 +1,8 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test scripts & scratch files
+tests/
+scratch/
+*.tmp
