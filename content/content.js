@@ -92,6 +92,11 @@
       const viewportHeight = window.innerHeight;
       const currentScrollY = getScrollTop();
 
+      // On subsequent slices (sliceIndex > 0), unstick sticky sidebars & hide fixed headers to prevent duplicate stamps
+      if (sliceIndex > 0 && currentSession && currentSession.hideFixedElements !== false) {
+        isolateStickyAndFixedElements();
+      }
+
       // Hide HUD for clean screenshot frame
       hideHUD();
       await sleep(currentSession ? currentSession.delay : 300);
@@ -117,8 +122,9 @@
 
         lastCapturedScrollY = currentScrollY;
 
-        // Restore HUD
+        // Restore HUD & DOM elements immediately after snapshot
         showHUD();
+        restoreStickyAndFixedElements();
 
         if (!captureResult || !captureResult.success) {
           console.warn('Slice capture issue:', captureResult ? captureResult.error : 'Unknown');
@@ -128,6 +134,7 @@
         updateHUDStats(sliceIndex, currentScrollY + viewportHeight);
       } catch (err) {
         showHUD();
+        restoreStickyAndFixedElements();
         console.error('Error during slice capture:', err);
       }
 
@@ -517,9 +524,75 @@
     }
   }
 
+  let modifiedStickyFixedElements = [];
+
+  /**
+   * Unsticks sticky sidebars and hides fixed floating bars for subsequent frames
+   */
+  function isolateStickyAndFixedElements() {
+    restoreStickyAndFixedElements();
+    modifiedStickyFixedElements = [];
+
+    const all = document.querySelectorAll('*');
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      if (el === hudContainer || (hudContainer && hudContainer.contains(el))) continue;
+
+      try {
+        const style = window.getComputedStyle(el);
+        const pos = style.position;
+
+        if (pos === 'sticky') {
+          // Unstick sticky elements (like order summary cards, sticky sidebars, sticky filters)
+          // so they remain at their natural top place in the document flow without following scroll
+          modifiedStickyFixedElements.push({
+            element: el,
+            type: 'sticky',
+            origPosition: el.style.position
+          });
+          el.style.setProperty('position', 'static', 'important');
+        } else if (pos === 'fixed') {
+          // Hide fixed headers, top navbars, and floating action buttons during subsequent slices
+          modifiedStickyFixedElements.push({
+            element: el,
+            type: 'fixed',
+            origVisibility: el.style.visibility
+          });
+          el.style.setProperty('visibility', 'hidden', 'important');
+        }
+      } catch (err) {
+        // Cross-origin CSS protection
+      }
+    }
+  }
+
+  /**
+   * Restores original position and visibility of modified elements
+   */
+  function restoreStickyAndFixedElements() {
+    for (let i = 0; i < modifiedStickyFixedElements.length; i++) {
+      const item = modifiedStickyFixedElements[i];
+      if (item.type === 'sticky') {
+        if (item.origPosition) {
+          item.element.style.position = item.origPosition;
+        } else {
+          item.element.style.removeProperty('position');
+        }
+      } else if (item.type === 'fixed') {
+        if (item.origVisibility) {
+          item.element.style.visibility = item.origVisibility;
+        } else {
+          item.element.style.removeProperty('visibility');
+        }
+      }
+    }
+    modifiedStickyFixedElements = [];
+  }
+
   function teardown() {
     isCapturing = false;
     isPaused = false;
+    restoreStickyAndFixedElements();
     window.removeEventListener('keydown', handleGlobalKeydown, true);
 
     if (hudContainer && hudContainer.parentNode) {
