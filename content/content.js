@@ -50,6 +50,7 @@
     isCapturing = true;
     isPaused = false;
     currentSession = session;
+    __mainScroller = null; // Clear cached scroller
     originalScrollPos = { x: window.scrollX || 0, y: getScrollTop() };
     lastCapturedScrollY = -1;
 
@@ -92,7 +93,7 @@
       const viewportHeight = window.innerHeight;
       const currentScrollY = getScrollTop();
 
-      // On subsequent slices (sliceIndex > 0), unstick sticky sidebars & hide fixed headers to prevent duplicate stamps
+      // On subsequent slices (sliceIndex > 0), hide floating sticky sidebars & fixed headers to prevent duplicate stamps
       if (sliceIndex > 0 && currentSession && currentSession.hideFixedElements !== false) {
         isolateStickyAndFixedElements();
       }
@@ -158,8 +159,8 @@
         }
       }
 
-      // Scroll down by 70% of viewport height
-      const scrollStep = Math.max(100, Math.floor(viewportHeight * 0.7));
+      // Scroll down by 65% of viewport height (guarantees generous 35% overlap so no items are cut off)
+      const scrollStep = Math.max(100, Math.floor(viewportHeight * 0.65));
       const nextY = Math.min(currentScrollY + scrollStep, docHeight - viewportHeight);
       
       performScroll(nextY);
@@ -167,31 +168,62 @@
     }
   }
 
-  function getScrollTop() {
-    return Math.max(
-      window.scrollY || 0,
-      window.pageYOffset || 0,
-      document.documentElement ? document.documentElement.scrollTop : 0,
-      document.body ? document.body.scrollTop : 0,
-      document.scrollingElement ? document.scrollingElement.scrollTop : 0
+  let __mainScroller = null;
+
+  function findMainScroller() {
+    if (__mainScroller) return __mainScroller;
+    
+    let maxScrollHeight = Math.max(
+      document.body ? document.body.scrollHeight : 0,
+      document.documentElement ? document.documentElement.scrollHeight : 0,
+      window.innerHeight
     );
+    let bestScroller = null;
+
+    const all = document.querySelectorAll('*');
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i];
+      if (el.scrollHeight > maxScrollHeight && el.scrollHeight > el.clientHeight && el.clientHeight > 0) {
+        const style = window.getComputedStyle(el);
+        if (style.overflowY === 'auto' || style.overflowY === 'scroll' || style.overflow === 'auto' || style.overflow === 'scroll') {
+          maxScrollHeight = el.scrollHeight;
+          bestScroller = el;
+        }
+      }
+    }
+
+    if (!bestScroller) {
+      if (document.scrollingElement && document.scrollingElement.scrollHeight >= window.innerHeight) {
+        bestScroller = document.scrollingElement;
+      } else if (document.body && document.body.scrollHeight >= window.innerHeight) {
+        bestScroller = document.body;
+      } else {
+        bestScroller = document.documentElement;
+      }
+    }
+
+    __mainScroller = bestScroller;
+    return bestScroller;
+  }
+
+  function getScrollTop() {
+    const el = findMainScroller();
+    if (el === document.documentElement || el === document.body || el === document.scrollingElement) {
+      return Math.max(window.scrollY || 0, window.pageYOffset || 0, el.scrollTop);
+    }
+    return el.scrollTop;
   }
 
   function getDocHeight() {
-    return Math.max(
-      document.body ? document.body.scrollHeight : 0,
-      document.documentElement ? document.documentElement.scrollHeight : 0,
-      document.body ? document.body.offsetHeight : 0,
-      document.documentElement ? document.documentElement.offsetHeight : 0,
-      window.innerHeight
-    );
+    return Math.max(findMainScroller().scrollHeight, window.innerHeight);
   }
 
   function performScroll(y) {
-    window.scrollTo({ top: y, left: 0, behavior: 'instant' });
-    if (document.documentElement) document.documentElement.scrollTop = y;
-    if (document.body) document.body.scrollTop = y;
-    if (document.scrollingElement) document.scrollingElement.scrollTop = y;
+    const el = findMainScroller();
+    if (el === document.documentElement || el === document.body || el === document.scrollingElement) {
+      window.scrollTo({ top: y, left: 0, behavior: 'instant' });
+    }
+    el.scrollTop = y;
   }
 
   async function waitForScroll() {
@@ -527,7 +559,8 @@
   let modifiedStickyFixedElements = [];
 
   /**
-   * Unsticks sticky sidebars and hides fixed floating bars for subsequent frames
+   * Hides floating sticky sidebars and fixed floating bars for subsequent frames
+   * using non-destructive visibility hiding (zero layout shifts, zero DOM reflows).
    */
   function isolateStickyAndFixedElements() {
     restoreStickyAndFixedElements();
@@ -542,23 +575,16 @@
         const style = window.getComputedStyle(el);
         const pos = style.position;
 
-        if (pos === 'sticky') {
-          // Unstick sticky elements (like order summary cards, sticky sidebars, sticky filters)
-          // so they remain at their natural top place in the document flow without following scroll
-          modifiedStickyFixedElements.push({
-            element: el,
-            type: 'sticky',
-            origPosition: el.style.position
-          });
-          el.style.setProperty('position', 'static', 'important');
-        } else if (pos === 'fixed') {
-          // Hide fixed headers, top navbars, and floating action buttons during subsequent slices
-          modifiedStickyFixedElements.push({
-            element: el,
-            type: 'fixed',
-            origVisibility: el.style.visibility
-          });
-          el.style.setProperty('visibility', 'hidden', 'important');
+        if (pos === 'sticky' || pos === 'fixed') {
+          const rect = el.getBoundingClientRect();
+          // Hide if element is currently floating or pinned in the viewport
+          if (rect.height > 0 && rect.width > 0 && rect.top < 250) {
+            modifiedStickyFixedElements.push({
+              element: el,
+              origVisibility: el.style.visibility
+            });
+            el.style.setProperty('visibility', 'hidden', 'important');
+          }
         }
       } catch (err) {
         // Cross-origin CSS protection
@@ -567,23 +593,15 @@
   }
 
   /**
-   * Restores original position and visibility of modified elements
+   * Restores original visibility of modified elements
    */
   function restoreStickyAndFixedElements() {
     for (let i = 0; i < modifiedStickyFixedElements.length; i++) {
       const item = modifiedStickyFixedElements[i];
-      if (item.type === 'sticky') {
-        if (item.origPosition) {
-          item.element.style.position = item.origPosition;
-        } else {
-          item.element.style.removeProperty('position');
-        }
-      } else if (item.type === 'fixed') {
-        if (item.origVisibility) {
-          item.element.style.visibility = item.origVisibility;
-        } else {
-          item.element.style.removeProperty('visibility');
-        }
+      if (item.origVisibility) {
+        item.element.style.visibility = item.origVisibility;
+      } else {
+        item.element.style.removeProperty('visibility');
       }
     }
     modifiedStickyFixedElements = [];

@@ -175,24 +175,48 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      // 1. Sort frames by capture sequence
-      validFrames.sort((a, b) => (a.slice.index || 0) - (b.slice.index || 0));
+      // 1. Sort frames strictly by vertical scroll position
+      validFrames.sort((a, b) => (a.slice.scrollY || 0) - (b.slice.scrollY || 0));
 
-      const dpr = validFrames[0].slice.devicePixelRatio || 1;
-      const baseWidth = validFrames[0].img.naturalWidth;
-      const startY = validFrames[0].slice.scrollY || 0;
-      const lastSlice = validFrames[validFrames.length - 1].slice;
+      const firstImg = validFrames[0].img;
+      const firstSlice = validFrames[0].slice;
+      const dpr = firstSlice.devicePixelRatio || 1;
+      const baseWidth = firstImg.naturalWidth;
+      const firstHeight = firstImg.naturalHeight;
 
-      // Compute total canvas height covering from top of first slice to bottom of last slice
-      let totalHeight = Math.round((lastSlice.scrollY + lastSlice.viewportHeight - startY) * dpr);
-      if (totalHeight <= 0 || isNaN(totalHeight)) {
-        totalHeight = validFrames[0].img.naturalHeight;
+      // 2. Subpixel-perfect delta slice calculation
+      let drawnHeight = firstHeight;
+      const sliceSteps = [];
+
+      for (let i = 1; i < validFrames.length; i++) {
+        const prev = validFrames[i - 1].slice;
+        const curr = validFrames[i].slice;
+        const prevY_px = Math.round((prev.scrollY || 0) * dpr);
+        const currY_px = Math.round((curr.scrollY || 0) * dpr);
+        const new_pixels = currY_px - prevY_px;
+        if (new_pixels <= 0) continue;
+
+        const img = validFrames[i].img;
+        const imgHeight = img.naturalHeight;
+        
+        // Clamp to prevent drawing outside image bounds (which causes white gaps)
+        const safe_new_pixels = Math.min(new_pixels, imgHeight);
+        const source_y = imgHeight - safe_new_pixels;
+
+        sliceSteps.push({
+          img,
+          source_y,
+          new_pixels: safe_new_pixels,
+          dest_y: drawnHeight
+        });
+
+        drawnHeight += safe_new_pixels;
       }
 
       canvasWidth = baseWidth;
-      canvasHeight = Math.max(validFrames[0].img.naturalHeight, totalHeight);
+      canvasHeight = drawnHeight;
 
-      // Set canvas dimensions
+      // Set canvas dimensions exactly to drawn height (zero trailing white space)
       compositeCanvas.width = canvasWidth;
       compositeCanvas.height = canvasHeight;
 
@@ -200,12 +224,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       ctx.fillStyle = selectedBgColor || '#ffffff';
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-      // 2. Draw all slices onto canvas at exact vertical offsets
-      validFrames.forEach(({ img, slice }) => {
-        const destY = Math.max(0, Math.round(((slice.scrollY || 0) - startY) * dpr));
-        const destW = Math.round(slice.viewportWidth * dpr);
-        const destH = Math.round(slice.viewportHeight * dpr);
-        ctx.drawImage(img, 0, destY, destW, destH);
+      // 3. Draw Slice 0 (full initial viewport from top)
+      ctx.drawImage(firstImg, 0, 0);
+
+      // 4. Draw subsequent slices at exact destination Y coordinates
+      sliceSteps.forEach((step) => {
+        ctx.drawImage(
+          step.img,
+          0, step.source_y, step.img.naturalWidth, step.new_pixels,
+          0, step.dest_y, canvasWidth, step.new_pixels
+        );
       });
 
       // Update UI Badges
