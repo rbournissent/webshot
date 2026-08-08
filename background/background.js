@@ -234,11 +234,23 @@ async function handleStopCapture(tabId, message, sendResponse) {
   }
 }
 
+// In-memory cache for completed sessions (instant retrieval for editor tab)
+const completedSessions = new Map();
+
 async function finalizeSession(tabId, session) {
-  // Store session in chrome.storage.local (and IndexedDB via editor window)
   const sessionKey = 'session_' + session.id;
   
-  // Clean up session from active map
+  // Store in memory for instant editor retrieval
+  completedSessions.set(session.id, {
+    id: session.id,
+    url: session.url,
+    title: session.title,
+    slices: session.slices,
+    metadata: session.metadata,
+    created: Date.now()
+  });
+
+  // Clean up from active capture map
   captureSessions.delete(tabId);
 
   // Notify content script to remove HUD overlay
@@ -248,18 +260,10 @@ async function finalizeSession(tabId, session) {
     // ignore if tab closed
   }
 
-  // Save session payload to local storage
+  // Also persist to storage as fallback
   const storageData = {};
-  storageData[sessionKey] = {
-    id: session.id,
-    url: session.url,
-    title: session.title,
-    slices: session.slices,
-    metadata: session.metadata,
-    created: Date.now()
-  };
-
-  await chrome.storage.local.set(storageData);
+  storageData[sessionKey] = completedSessions.get(session.id);
+  chrome.storage.local.set(storageData).catch((err) => console.warn('Storage set error:', err));
 
   // Open the editor in a new tab
   const editorUrl = chrome.runtime.getURL(`editor/editor.html?session=${session.id}`);
@@ -282,7 +286,7 @@ function handleCancelCapture(tabId, sendResponse) {
 }
 
 /**
- * Retrieve session payload for Editor
+ * Retrieve session payload for Editor (instant from memory or storage fallback)
  */
 async function handleGetSessionData(sessionId, sendResponse) {
   if (!sessionId) {
@@ -290,6 +294,13 @@ async function handleGetSessionData(sessionId, sendResponse) {
     return;
   }
 
+  // 1. Instant in-memory lookup
+  if (completedSessions.has(sessionId)) {
+    sendResponse({ success: true, session: completedSessions.get(sessionId) });
+    return;
+  }
+
+  // 2. Fallback to local storage
   const sessionKey = 'session_' + sessionId;
   const data = await chrome.storage.local.get([sessionKey]);
 

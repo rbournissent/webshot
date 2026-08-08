@@ -3,8 +3,10 @@
  */
 
 (() => {
-  if (window.__webshot_injected) return;
-  window.__webshot_injected = true;
+  // Clean up any previous instance when re-injecting
+  if (window.__webshot_controller) {
+    window.__webshot_controller.teardown();
+  }
 
   let isCapturing = false;
   let isPaused = false;
@@ -12,8 +14,14 @@
   let hudContainer = null;
   let hudShadowRoot = null;
   let originalScrollPos = { x: 0, y: 0 };
-  let originalOverflow = '';
-  let modifiedFixedElements = [];
+  let lastCapturedScrollY = -1;
+
+  // Controller reference
+  window.__webshot_controller = {
+    startAutoScroll,
+    stopAndOpenEditor,
+    teardown
+  };
 
   // Listen for messages from background script
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -42,9 +50,10 @@
     isCapturing = true;
     isPaused = false;
     currentSession = session;
-    originalScrollPos = { x: window.scrollX, y: window.scrollY };
+    originalScrollPos = { x: window.scrollX || 0, y: getScrollTop() };
+    lastCapturedScrollY = -1;
 
-    // Inject HUD
+    // Inject floating HUD
     createFloatingHUD();
 
     // If visible mode, take 1 snapshot and stop immediately
@@ -53,9 +62,13 @@
       return;
     }
 
-    // Otherwise scroll to top first to begin full sequence
-    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
-    await sleep(200);
+    // Scroll to the very top of document first and verify Y=0
+    for (let t = 0; t < 3; t++) {
+      performScroll(0);
+      await waitForScroll();
+      if (getScrollTop() === 0) break;
+    }
+    await sleep(250);
 
     // Start auto-scroll capture loop
     runScrollCaptureLoop();
@@ -66,7 +79,6 @@
    */
   async function runScrollCaptureLoop() {
     let sliceIndex = 0;
-    const overlapBuffer = 20; // 20px overlap to prevent sub-pixel stitch seams
 
     while (isCapturing) {
       // If paused, wait until resumed
@@ -76,42 +88,37 @@
 
       if (!isCapturing) break;
 
-      const docHeight = Math.max(
-        document.body.scrollHeight,
-        document.documentElement.scrollHeight,
-        document.body.offsetHeight,
-        document.documentElement.offsetHeight
-      );
+      const docHeight = getDocHeight();
       const viewportHeight = window.innerHeight;
-      const currentScrollY = window.scrollY;
+      const currentScrollY = getScrollTop();
 
-      // Handle sticky / fixed headers on subsequent slices (sliceIndex > 0)
-      if (sliceIndex > 0 && currentSession && currentSession.hideFixedElements) {
-        hideFixedStickyHeaders();
-      }
-
-      // Hide HUD for the clean screenshot slice
+      // Hide HUD for clean screenshot frame
       hideHUD();
-      await sleep(currentSession ? currentSession.delay : 350);
+      await sleep(currentSession ? currentSession.delay : 300);
 
       // Trigger slice capture in background
       try {
         const captureResult = await sendBackgroundMessage({
           type: 'CAPTURE_SLICE',
-          scrollX: window.scrollX,
-          scrollY: window.scrollY,
+          scrollX: window.scrollX || 0,
+          scrollY: currentScrollY,
           viewportWidth: window.innerWidth,
           viewportHeight: window.innerHeight,
           devicePixelRatio: window.devicePixelRatio || 1,
-          totalDocumentWidth: Math.max(document.body.scrollWidth, document.documentElement.scrollWidth),
+          totalDocumentWidth: Math.max(
+            document.body ? document.body.scrollWidth : 0,
+            document.documentElement ? document.documentElement.scrollWidth : 0,
+            window.innerWidth
+          ),
           totalDocumentHeight: docHeight,
           pageTitle: document.title,
           pageUrl: window.location.href
         });
 
-        // Restore HUD & headers
+        lastCapturedScrollY = currentScrollY;
+
+        // Restore HUD
         showHUD();
-        restoreFixedStickyHeaders();
 
         if (!captureResult || !captureResult.success) {
           console.warn('Slice capture issue:', captureResult ? captureResult.error : 'Unknown');
@@ -121,7 +128,6 @@
         updateHUDStats(sliceIndex, currentScrollY + viewportHeight);
       } catch (err) {
         showHUD();
-        restoreFixedStickyHeaders();
         console.error('Error during slice capture:', err);
       }
 
@@ -129,31 +135,61 @@
       if (!isCapturing) break;
 
       // Check if we reached the bottom of document
-      const atBottom = (window.scrollY + viewportHeight) >= (docHeight - 5);
+      const atBottom = (currentScrollY + viewportHeight) >= (docHeight - 10);
 
       if (atBottom) {
         if (currentSession && currentSession.mode === 'full') {
           // Auto full-page mode finished!
           await sleep(250);
-          stopAndOpenEditor();
+          await stopAndOpenEditor(false);
           break;
         } else {
           // Continuous mode at bottom: update HUD status
           setHUDBottomNotice();
-          // Pause slightly to check if infinite scroll adds content, or wait for user Stop
           await sleep(1000);
           continue;
         }
       }
 
-      // Scroll down by 75% of viewport height (ensures clean overlapping context without gaps)
-      const scrollStep = Math.max(100, Math.floor(viewportHeight * 0.75));
+      // Scroll down by 70% of viewport height
+      const scrollStep = Math.max(100, Math.floor(viewportHeight * 0.7));
       const nextY = Math.min(currentScrollY + scrollStep, docHeight - viewportHeight);
-      window.scrollTo({ top: nextY, left: 0, behavior: 'instant' });
-
-      // Allow rendering to settle
-      await sleep(150);
+      
+      performScroll(nextY);
+      await waitForScroll();
     }
+  }
+
+  function getScrollTop() {
+    return Math.max(
+      window.scrollY || 0,
+      window.pageYOffset || 0,
+      document.documentElement ? document.documentElement.scrollTop : 0,
+      document.body ? document.body.scrollTop : 0,
+      document.scrollingElement ? document.scrollingElement.scrollTop : 0
+    );
+  }
+
+  function getDocHeight() {
+    return Math.max(
+      document.body ? document.body.scrollHeight : 0,
+      document.documentElement ? document.documentElement.scrollHeight : 0,
+      document.body ? document.body.offsetHeight : 0,
+      document.documentElement ? document.documentElement.offsetHeight : 0,
+      window.innerHeight
+    );
+  }
+
+  function performScroll(y) {
+    window.scrollTo({ top: y, left: 0, behavior: 'instant' });
+    if (document.documentElement) document.documentElement.scrollTop = y;
+    if (document.body) document.body.scrollTop = y;
+    if (document.scrollingElement) document.scrollingElement.scrollTop = y;
+  }
+
+  async function waitForScroll() {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await sleep(120);
   }
 
   /**
@@ -165,8 +201,8 @@
 
     await sendBackgroundMessage({
       type: 'CAPTURE_SLICE',
-      scrollX: window.scrollX,
-      scrollY: window.scrollY,
+      scrollX: window.scrollX || 0,
+      scrollY: getScrollTop(),
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       devicePixelRatio: window.devicePixelRatio || 1,
@@ -178,18 +214,49 @@
 
     showHUD();
     if (autoStop) {
-      stopAndOpenEditor();
+      await stopAndOpenEditor(false);
     }
   }
 
   /**
    * Finalizes capture and requests background to open editor tab
    */
-  function stopAndOpenEditor() {
+  async function stopAndOpenEditor(captureCurrent = true) {
+    if (!isCapturing && currentSession === null) return;
+    const sessionToStop = currentSession;
     isCapturing = false;
+
+    // Capture final viewport if not already captured
+    const currentScrollY = getScrollTop();
+    if (captureCurrent && Math.abs(currentScrollY - lastCapturedScrollY) > 20) {
+      hideHUD();
+      await sleep(150);
+
+      try {
+        await sendBackgroundMessage({
+          type: 'CAPTURE_SLICE',
+          scrollX: window.scrollX || 0,
+          scrollY: currentScrollY,
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio || 1,
+          totalDocumentWidth: Math.max(
+            document.body ? document.body.scrollWidth : 0,
+            document.documentElement ? document.documentElement.scrollWidth : 0,
+            window.innerWidth
+          ),
+          totalDocumentHeight: getDocHeight(),
+          pageTitle: document.title,
+          pageUrl: window.location.href
+        });
+      } catch (e) {
+        console.warn('Final slice note:', e);
+      }
+    }
+
     chrome.runtime.sendMessage({
       type: 'STOP_CAPTURE',
-      sessionId: currentSession ? currentSession.id : null
+      sessionId: sessionToStop ? sessionToStop.id : null
     }, () => {
       teardown();
     });
@@ -228,39 +295,6 @@
   }
 
   /**
-   * Temporarily hides fixed and sticky elements to avoid duplicate banners
-   */
-  function hideFixedStickyHeaders() {
-    modifiedFixedElements = [];
-    const elements = document.querySelectorAll('header, nav, [style*="fixed"], [style*="sticky"], [class*="fixed"], [class*="sticky"], [class*="navbar"], [class*="header"]');
-    
-    elements.forEach((el) => {
-      if (el === hudContainer || el.contains(hudContainer)) return;
-      const computed = window.getComputedStyle(el);
-      if (computed.position === 'fixed' || computed.position === 'sticky') {
-        const top = parseFloat(computed.top);
-        // Only hide if it's positioned near the top of the viewport
-        if (!isNaN(top) && top < 200) {
-          modifiedFixedElements.push({
-            element: el,
-            prevVisibility: el.style.visibility,
-            prevOpacity: el.style.opacity
-          });
-          el.style.visibility = 'hidden';
-        }
-      }
-    });
-  }
-
-  function restoreFixedStickyHeaders() {
-    modifiedFixedElements.forEach(({ element, prevVisibility, prevOpacity }) => {
-      element.style.visibility = prevVisibility;
-      element.style.opacity = prevOpacity;
-    });
-    modifiedFixedElements = [];
-  }
-
-  /**
    * Creates the modern floating HUD
    */
   function createFloatingHUD() {
@@ -270,7 +304,6 @@
     hudContainer.id = 'webshot-hud-host';
     hudShadowRoot = hudContainer.attachShadow({ mode: 'open' });
 
-    // Inject styles into shadow DOM
     const styleEl = document.createElement('style');
     styleEl.textContent = `
       :host {
@@ -436,11 +469,11 @@
     document.body.appendChild(hudContainer);
 
     // Bind HUD events
-    hudShadowRoot.querySelector('#btnStop').addEventListener('click', stopAndOpenEditor);
+    hudShadowRoot.querySelector('#btnStop').addEventListener('click', () => stopAndOpenEditor(true));
     hudShadowRoot.querySelector('#btnPause').addEventListener('click', togglePause);
     hudShadowRoot.querySelector('#btnCancel').addEventListener('click', cancelCapture);
 
-    // Global keyboard shortcuts (Escape = Stop & Edit, Space = Pause/Resume)
+    // Keyboard shortcuts
     window.addEventListener('keydown', handleGlobalKeydown, true);
   }
 
@@ -449,7 +482,7 @@
     if (e.key === 'Escape' || e.key === 'Enter') {
       e.preventDefault();
       e.stopPropagation();
-      stopAndOpenEditor();
+      stopAndOpenEditor(true);
     } else if (e.code === 'Space' && document.activeElement === document.body) {
       e.preventDefault();
       togglePause();
@@ -467,7 +500,7 @@
   function setHUDBottomNotice() {
     if (!hudShadowRoot) return;
     const statusText = hudShadowRoot.querySelector('#hudStatusText');
-    if (statusText) statusText.textContent = 'End of page reached • Click Stop';
+    if (statusText) statusText.textContent = 'End of page reached • Click Stop & Edit';
   }
 
   function hideHUD() {
@@ -487,7 +520,6 @@
   function teardown() {
     isCapturing = false;
     isPaused = false;
-    restoreFixedStickyHeaders();
     window.removeEventListener('keydown', handleGlobalKeydown, true);
 
     if (hudContainer && hudContainer.parentNode) {
