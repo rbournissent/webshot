@@ -132,98 +132,103 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     loadingStatusText.textContent = `Assembling ${slices.length} frames...`;
 
-    // Preload image elements
-    const loadedImages = await Promise.all(
-      slices.map((slice, i) => {
-        return new Promise((resolve) => {
-          const img = new Image();
-          img.onload = () => resolve({ img, slice });
-          img.onerror = () => {
-            console.error(`Failed to load slice #${i}`);
-            resolve(null);
-          };
-          img.src = slice.dataUrl;
-        });
-      })
-    );
+    try {
+      // Preload image elements with synchronous decode check fallback
+      const loadedImages = await Promise.all(
+        slices.map((slice, i) => {
+          return new Promise((resolve) => {
+            if (!slice || !slice.dataUrl) {
+              resolve(null);
+              return;
+            }
+            const img = new Image();
+            let settled = false;
 
-    const validFrames = loadedImages.filter(Boolean);
-    if (validFrames.length === 0) {
-      showLoadingError('Could not process captured frame images.');
-      return;
-    }
+            const done = () => {
+              if (!settled) {
+                settled = true;
+                resolve({ img, slice });
+              }
+            };
 
-    // 1. Calculate total canvas height
-    let totalHeight = validFrames[0].img.naturalHeight;
-    for (let i = 1; i < validFrames.length; i++) {
-      const prevSlice = validFrames[i - 1].slice;
-      const currSlice = validFrames[i].slice;
-      const dpr = currSlice.devicePixelRatio || 1;
-      const deltaY_css = currSlice.scrollY - prevSlice.scrollY;
-      
-      if (deltaY_css > 0) {
-        const newHeight_px = Math.min(
-          validFrames[i].img.naturalHeight,
-          Math.round(deltaY_css * dpr)
-        );
-        totalHeight += newHeight_px;
-      }
-    }
+            img.onload = done;
+            img.onerror = (err) => {
+              console.warn(`Could not decode slice #${i}:`, err);
+              if (!settled) {
+                settled = true;
+                resolve(null);
+              }
+            };
+            img.src = slice.dataUrl;
 
-    canvasWidth = baseWidth;
-    canvasHeight = totalHeight;
-
-    // Set canvas dimensions
-    compositeCanvas.width = canvasWidth;
-    compositeCanvas.height = canvasHeight;
-
-    // Fill canvas with white background initially
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-    // 2. Draw slices cleanly:
-    // Frame 0: draw entire image at y = 0
-    ctx.drawImage(validFrames[0].img, 0, 0);
-    let currentCanvasY = validFrames[0].img.naturalHeight;
-
-    // Subsequent frames: only copy the NEW bottom content revealed by scrolling
-    for (let i = 1; i < validFrames.length; i++) {
-      const prevSlice = validFrames[i - 1].slice;
-      const currSlice = validFrames[i].slice;
-      const img = validFrames[i].img;
-      const dpr = currSlice.devicePixelRatio || 1;
-      const deltaY_css = currSlice.scrollY - prevSlice.scrollY;
-
-      if (deltaY_css <= 0) continue; // No scroll progress, skip duplicate frame
-
-      const newHeight_px = Math.min(img.naturalHeight, Math.round(deltaY_css * dpr));
-      const sourceY_px = Math.max(0, img.naturalHeight - newHeight_px);
-
-      ctx.drawImage(
-        img,
-        0, sourceY_px, img.naturalWidth, newHeight_px,
-        0, currentCanvasY, canvasWidth, newHeight_px
+            // Handle instantaneous in-memory data URLs
+            if (img.complete && img.naturalWidth > 0) {
+              done();
+            }
+          });
+        })
       );
-      currentCanvasY += newHeight_px;
+
+      const validFrames = loadedImages.filter(Boolean);
+      if (validFrames.length === 0) {
+        showLoadingError('Could not process captured frame images.');
+        return;
+      }
+
+      // 1. Sort frames by capture sequence
+      validFrames.sort((a, b) => (a.slice.index || 0) - (b.slice.index || 0));
+
+      const dpr = validFrames[0].slice.devicePixelRatio || 1;
+      const baseWidth = validFrames[0].img.naturalWidth;
+      const startY = validFrames[0].slice.scrollY || 0;
+      const lastSlice = validFrames[validFrames.length - 1].slice;
+
+      // Compute total canvas height covering from top of first slice to bottom of last slice
+      let totalHeight = Math.round((lastSlice.scrollY + lastSlice.viewportHeight - startY) * dpr);
+      if (totalHeight <= 0 || isNaN(totalHeight)) {
+        totalHeight = validFrames[0].img.naturalHeight;
+      }
+
+      canvasWidth = baseWidth;
+      canvasHeight = Math.max(validFrames[0].img.naturalHeight, totalHeight);
+
+      // Set canvas dimensions
+      compositeCanvas.width = canvasWidth;
+      compositeCanvas.height = canvasHeight;
+
+      // Fill canvas background
+      ctx.fillStyle = selectedBgColor || '#ffffff';
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+      // 2. Draw all slices onto canvas at exact vertical offsets
+      validFrames.forEach(({ img, slice }) => {
+        const destY = Math.max(0, Math.round(((slice.scrollY || 0) - startY) * dpr));
+        const destW = Math.round(slice.viewportWidth * dpr);
+        const destH = Math.round(slice.viewportHeight * dpr);
+        ctx.drawImage(img, 0, destY, destW, destH);
+      });
+
+      // Update UI Badges
+      dimensionBadge.textContent = `${canvasWidth} × ${canvasHeight} px`;
+
+      // Render Minimap
+      renderMinimap();
+
+      // Initialize Cropper overlay (covers 100% of the screenshot by default)
+      cropper.init(canvasWidth, canvasHeight, zoom);
+
+      // Fit canvas to viewport
+      fitToScreen();
+
+      // Estimate initial JPG size
+      estimateJpgSize();
+    } catch (err) {
+      console.error('Stitch error:', err);
+    } finally {
+      // Guaranteed to dismiss the loading overlay
+      loadingOverlay.classList.add('hidden');
+      loadingOverlay.style.display = 'none';
     }
-
-    // Update UI Badges
-    dimensionBadge.textContent = `${canvasWidth} × ${canvasHeight} px`;
-
-    // Render Minimap
-    renderMinimap();
-
-    // Initialize Cropper overlay
-    cropper.init(canvasWidth, canvasHeight, zoom);
-
-    // Fit canvas to viewport
-    fitToScreen();
-
-    // Hide loader
-    loadingOverlay.classList.add('hidden');
-
-    // Estimate initial JPG size
-    estimateJpgSize();
   }
 
   /**
@@ -310,13 +315,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function fitToScreen() {
     const stageRect = canvasStage.getBoundingClientRect();
+    if (stageRect.width === 0 || stageRect.height === 0 || canvasWidth === 0 || canvasHeight === 0) return;
+
     const padding = 40;
     const scaleX = (stageRect.width - padding * 2) / canvasWidth;
     const scaleY = (stageRect.height - padding * 2) / canvasHeight;
     const fitZoom = Math.min(scaleX, scaleY, 1.0);
 
-    const panX = (stageRect.width - canvasWidth * fitZoom) / 2;
-    const panY = (stageRect.height - canvasHeight * fitZoom) / 2;
+    const totalW = canvasWidth * fitZoom;
+    const totalH = canvasHeight * fitZoom;
+
+    const panX = (stageRect.width - totalW) / 2;
+    const panY = totalH < stageRect.height ? (stageRect.height - totalH) / 2 : padding;
 
     setTransform(fitZoom, panX, panY);
   }

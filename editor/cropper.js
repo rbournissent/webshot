@@ -273,46 +273,48 @@ class InteractiveCropper {
   }
 
   render() {
-    const scaledX = this.crop.x * this.zoom;
-    const scaledY = this.crop.y * this.zoom;
-    const scaledW = this.crop.width * this.zoom;
-    const scaledH = this.crop.height * this.zoom;
-    const totalW = this.canvasWidth * this.zoom;
-    const totalH = this.canvasHeight * this.zoom;
+    // 1:1 unscaled canvas pixel coordinates (CSS transform on parent handles zoom)
+    this.cropBox.style.left = `${this.crop.x}px`;
+    this.cropBox.style.top = `${this.crop.y}px`;
+    this.cropBox.style.width = `${this.crop.width}px`;
+    this.cropBox.style.height = `${this.crop.height}px`;
 
-    // Position Crop Box
-    this.cropBox.style.left = `${scaledX}px`;
-    this.cropBox.style.top = `${scaledY}px`;
-    this.cropBox.style.width = `${scaledW}px`;
-    this.cropBox.style.height = `${scaledH}px`;
-
-    // Position 4 Shading Rectangles around the box
-    // Top
+    // 4 dark shading rectangles outside crop box
+    // Top shade
     this.shades.top.style.top = '0px';
     this.shades.top.style.left = '0px';
-    this.shades.top.style.width = `${totalW}px`;
-    this.shades.top.style.height = `${scaledY}px`;
+    this.shades.top.style.width = `${this.canvasWidth}px`;
+    this.shades.top.style.height = `${this.crop.y}px`;
 
-    // Bottom
-    this.shades.bottom.style.top = `${scaledY + scaledH}px`;
+    // Bottom shade
+    this.shades.bottom.style.top = `${this.crop.y + this.crop.height}px`;
     this.shades.bottom.style.left = '0px';
-    this.shades.bottom.style.width = `${totalW}px`;
-    this.shades.bottom.style.height = `${Math.max(0, totalH - (scaledY + scaledH))}px`;
+    this.shades.bottom.style.width = `${this.canvasWidth}px`;
+    this.shades.bottom.style.height = `${Math.max(0, this.canvasHeight - (this.crop.y + this.crop.height))}px`;
 
-    // Left
-    this.shades.left.style.top = `${scaledY}px`;
+    // Left shade
+    this.shades.left.style.top = `${this.crop.y}px`;
     this.shades.left.style.left = '0px';
-    this.shades.left.style.width = `${scaledX}px`;
-    this.shades.left.style.height = `${scaledH}px`;
+    this.shades.left.style.width = `${this.crop.x}px`;
+    this.shades.left.style.height = `${this.crop.height}px`;
 
-    // Right
-    this.shades.right.style.top = `${scaledY}px`;
-    this.shades.right.style.left = `${scaledX + scaledW}px`;
-    this.shades.right.style.width = `${Math.max(0, totalW - (scaledX + scaledW))}px`;
-    this.shades.right.style.height = `${scaledH}px`;
+    // Right shade
+    this.shades.right.style.top = `${this.crop.y}px`;
+    this.shades.right.style.left = `${this.crop.x + this.crop.width}px`;
+    this.shades.right.style.width = `${Math.max(0, this.canvasWidth - (this.crop.x + this.crop.width))}px`;
+    this.shades.right.style.height = `${this.crop.height}px`;
 
-    // Badge text
-    const aspectTag = this.aspectRatioName !== 'free' ? ` (${this.aspectRatioName})` : '';
-    this.badge.textContent = `${this.crop.width} × ${this.crop.height} px${aspectTag}`;
+    // Inverse scale the resize handles and badge so they remain sharp and easily clickable at any zoom level
+    const invScale = 1 / Math.max(0.08, this.zoom);
+    const handles = this.cropBox.querySelectorAll('.crop-handle');
+    handles.forEach((h) => {
+      h.style.transform = `scale(${invScale})`;
+    });
+
+    if (this.badge) {
+      this.badge.style.transform = `translateX(-50%) scale(${invScale})`;
+      const aspectTag = this.aspectRatioName !== 'free' ? ` (${this.aspectRatioName})` : '';
+      this.badge.textContent = `${Math.round(this.crop.width)} × ${Math.round(this.crop.height)} px${aspectTag}`;
+    }
   }
 }
