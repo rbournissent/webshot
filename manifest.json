@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WebShot - Full Page Scrolling Screenshot & Cropper",
-  "version": "1.0.0",
+  "version": "2.3.0",
   "description": "Capture full-page scrolling screenshots with auto-scroll and stop controls, interactive cropping, and JPG export.",
   "icons": {
     "16": "icons/icon16.png",
