@@ -344,10 +344,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     viewportViewport.classList.toggle('panning', isPanToolActive);
   });
 
-  // Mouse Wheel Zoom
+  // Mouse Wheel Zoom (smooth and fine-grained)
   viewportViewport.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.15 : 0.85;
+    
+    // Smooth zoom factor based on deltaY magnitude (gentle and natural)
+    const normalizedDelta = Math.max(-100, Math.min(100, e.deltaY));
+    const zoomFactor = Math.exp(-normalizedDelta * 0.0015);
+    
     const stageRect = canvasStage.getBoundingClientRect();
     const mouseX = e.clientX - stageRect.left;
     const mouseY = e.clientY - stageRect.top;
