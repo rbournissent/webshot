@@ -64,12 +64,13 @@
     }
 
     // Scroll to the very top of document first and verify Y=0
-    for (let t = 0; t < 3; t++) {
+    for (let t = 0; t < 10; t++) {
       performScroll(0);
       await waitForScroll();
       if (getScrollTop() === 0) break;
+      await sleep(100);
     }
-    await sleep(250);
+    await sleep(350); // Additional delay to ensure rendering of the top
 
     // Start auto-scroll capture loop
     runScrollCaptureLoop();
@@ -89,6 +90,11 @@
 
       if (!isCapturing) break;
 
+      // Hide HUD for clean screenshot frame
+      hideHUD();
+      await sleep(currentSession ? currentSession.delay : 300);
+
+      // Read state AFTER the sleep so dynamic/lazy-loaded content is accounted for
       const docHeight = getDocHeight();
       const viewportHeight = window.innerHeight;
       const currentScrollY = getScrollTop();
@@ -97,10 +103,6 @@
       if (sliceIndex > 0 && currentSession && currentSession.hideFixedElements !== false) {
         isolateStickyAndFixedElements();
       }
-
-      // Hide HUD for clean screenshot frame
-      hideHUD();
-      await sleep(currentSession ? currentSession.delay : 300);
 
       // Trigger slice capture in background
       try {
@@ -172,38 +174,47 @@
 
   function findMainScroller() {
     if (__mainScroller) return __mainScroller;
-    
-    let maxScrollHeight = Math.max(
-      document.body ? document.body.scrollHeight : 0,
-      document.documentElement ? document.documentElement.scrollHeight : 0,
-      window.innerHeight
-    );
-    let bestScroller = null;
 
+    const winHeight = window.innerHeight;
+    let bestExplicitScroller = null;
+    let maxExplicitScroll = 0;
+
+    // Scan for explicitly defined scroll containers
     const all = document.querySelectorAll('*');
     for (let i = 0; i < all.length; i++) {
       const el = all[i];
-      if (el.scrollHeight > maxScrollHeight && el.scrollHeight > el.clientHeight && el.clientHeight > 0) {
-        const style = window.getComputedStyle(el);
-        if (style.overflowY === 'auto' || style.overflowY === 'scroll' || style.overflow === 'auto' || style.overflow === 'scroll') {
-          maxScrollHeight = el.scrollHeight;
-          bestScroller = el;
+      if (el.scrollHeight > el.clientHeight && el.clientHeight > 0) {
+        try {
+          const style = window.getComputedStyle(el);
+          if (style.overflowY === 'auto' || style.overflowY === 'scroll' || style.overflowY === 'overlay') {
+            if (el.scrollHeight > maxExplicitScroll) {
+              maxExplicitScroll = el.scrollHeight;
+              bestExplicitScroller = el;
+            }
+          }
+        } catch (e) {
+          // Ignore
         }
       }
     }
 
-    if (!bestScroller) {
-      if (document.scrollingElement && document.scrollingElement.scrollHeight >= window.innerHeight) {
-        bestScroller = document.scrollingElement;
-      } else if (document.body && document.body.scrollHeight >= window.innerHeight) {
-        bestScroller = document.body;
-      } else {
-        bestScroller = document.documentElement;
-      }
+    // If we found an explicit scroll container AND it occupies almost the entire screen,
+    // it is almost certainly a Single Page App wrapper (e.g. #app on BestSecret).
+    if (bestExplicitScroller && bestExplicitScroller.clientHeight >= winHeight * 0.75) {
+      __mainScroller = bestExplicitScroller;
+      return __mainScroller;
     }
 
-    __mainScroller = bestScroller;
-    return bestScroller;
+    // Otherwise, default to standard document scrolling (e.g. GitHub, normal blogs).
+    if (document.scrollingElement && document.scrollingElement.scrollHeight > winHeight) {
+      __mainScroller = document.scrollingElement;
+    } else if (document.body && document.body.scrollHeight > winHeight) {
+      __mainScroller = document.body;
+    } else {
+      __mainScroller = document.documentElement;
+    }
+
+    return __mainScroller;
   }
 
   function getScrollTop() {
